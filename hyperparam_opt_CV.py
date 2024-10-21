@@ -106,7 +106,7 @@ class Trainable_NN:
 class HyperParam_Opt:
 
     def __init__(self, location_dataset, checkpoint_folder, epochs, load_checkpoint,
-                    device, results_path, log_path, num_NN, wandb_project="CIFAR_example",
+                    device, results_path, log_path, num_NN, wandb_project="CIFAR_example2",
                     checkpoint_freq=3):
 
         self.location_dataset = location_dataset
@@ -131,59 +131,6 @@ class HyperParam_Opt:
         stderr = "{}/{}_{}.stderr".format(log_path, self.wandb_project, date_time)
         stdout = "{}/{}_{}.stdout".format(log_path, self.wandb_project, date_time)
         return stdout, stderr
-
-    def train_pass(self, trainloader, net, optimizer, criterion):
-        running_loss = 0
-        epoch_steps = 0
-        total = 0
-        correct = 0
-        for i, data in tqdm(enumerate(trainloader)):
-            # get the inputs; data is a list of [inputs, labels]
-            inputs, labels = data
-            inputs, labels = inputs.to(self.device), labels.to(self.device)
-
-            # zero the parameter gradients
-            optimizer.zero_grad()
-
-            # forward + backward + optimize
-            outputs = net(inputs)
-            _, predicted = torch.max(outputs.data, 1)
-            total += labels.size(0)
-            correct += (predicted == labels).sum().item()
-
-            loss = criterion(outputs, labels)
-            loss.backward()
-            optimizer.step()
-
-            # print statistics
-            running_loss += loss.item()
-            epoch_steps += 1
-        train_loss = running_loss/epoch_steps
-        train_acc = correct/total
-        return train_loss, train_acc, net, optimizer
-
-    def val_pass(self, valloader, net, criterion):
-        # Validation loss
-        val_loss = 0.0
-        val_steps = 0
-        total = 0
-        correct = 0
-        for i, data in tqdm(enumerate(valloader, 0)):
-            with torch.no_grad():
-                inputs, labels = data
-                inputs, labels = inputs.to(self.device), labels.to(self.device)
-
-                outputs = net(inputs)
-                _, predicted = torch.max(outputs.data, 1)
-                total += labels.size(0)
-                correct += (predicted == labels).sum().item()
-
-                loss = criterion(outputs, labels)
-                val_loss += loss.cpu().numpy()
-                val_steps += 1
-        loss_step = val_loss/val_steps
-        acc = correct/total
-        return loss_step, acc
 
     def make_checkpoint(self, val_loss, val_acc, net, optimizer):
         with tempfile.TemporaryDirectory() as temp_checkpoint_dir:
@@ -232,6 +179,15 @@ class HyperParam_Opt:
         train_NN.set_optimizer.remote(config)
         return train_NN
 
+    def create_NNset(self, config):
+        train_NNs = []
+        for n in range(self.num_NN):
+            trainloader1, valloader1 = self.load_dataloader(config["smoke_test"], config["batch_size"])
+            train_NN1 = self.create_actor(trainloader1, valloader1, config)
+
+            train_NNs.append(train_NN1)
+        return train_NNs
+
 
     def train_cifar(self, config):
 
@@ -240,13 +196,7 @@ class HyperParam_Opt:
         # Load existing checkpoint through `get_checkpoint()` API.      Does it work for several?
  #       if train.get_checkpoint() and self.load_checkpoint:
   #          net, optimizer = self.load_checkpoint()
-        train_NNs = []
-        for n in range(self.num_NN):
-            trainloader1, valloader1 = self.load_dataloader(config["smoke_test"], config["batch_size"])
-   #     trainloader2, valloader2 = self.load_dataloader(config["smoke_test"], config["batch_size"])
-
-            train_NN1 = self.create_actor(trainloader1, valloader1, config)
-            train_NNs.append(train_NN1)
+        train_NNs = self.create_NNset(config)
 
         for epoch in range(self.epochs):
             acc_loss = ray.get([trains.train_epoch.remote() for trains in train_NNs])
@@ -278,14 +228,13 @@ class HyperParam_Opt:
                 resources=tune.PlacementGroupFactory(resources_schedule)  # add memory requirement?  
             ),
             run_config=train.RunConfig(#storage_path=self.results_path,
-                    log_to_file=("my_stdout.log", "my_stderr.log"),
+                    log_to_file=(self.stdout_log, self.stderr_log),
+                    name="CIFAR_HOpt"
 #                    callbacks=[WandbLoggerCallback(project=self.wandb_project)],
-                    storage_path=self.checkpoint_folder, # MAYBE ERROR
+                    storage_path=self.results_path, # MAYBE ERROR
                     stop={"training_iteration": self.epochs},
                     ),
             tune_config=tune.TuneConfig( #Tune.report? num_samples? max_concurrent_trials? time_budget_s? reuse_actors? 
-        #        metric="loss",
-         #       mode="min",  # ALready at scheduler
                 scheduler=scheduler,
                 num_samples=num_samples,
                 ),
@@ -304,6 +253,7 @@ class HyperParam_Opt:
 
 if __name__ == "__main__":
     N=2
+    folder_name = "/work3/alff/CIFAR2/"
     smoke_test = True
     config = {
         "l1": tune.sample_from(lambda _: 2 ** np.random.randint(2, 9)),
@@ -313,13 +263,13 @@ if __name__ == "__main__":
         "smoke_test": smoke_test,
         }
     instance = HyperParam_Opt(
-                    location_dataset="/ceph/hpc/data/d2023d12-072-users/cifar_test/data/",
-                    checkpoint_folder="/ceph/hpc/data/d2023d12-072-users/cifar_test/checkpoint/",
-                    results_path="/ceph/hpc/data/d2023d12-072-users/cifar_test/results/",
-                    log_path="/ceph/hpc/data/d2023d12-072-users/cifar_test/logs/",
+                    location_dataset="{}/data/".format(folder_name),
+                    checkpoint_folder="{}/checkpoint/".format(folder_name),
+                    results_path="{}/results/".format(folder_name),
+                    log_path="{}/logs/".format(folder_name),
                     epochs=15,
                     load_checkpoint=False,
-                    device="cuda:0",
+                    device="cuda",
                     num_NN=N
                     )
   #  instance.train_cifar(config_try)
